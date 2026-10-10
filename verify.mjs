@@ -274,12 +274,18 @@ if (args.witness && cp) {
         // countersignature into a FAIL and a deleted label into "ignoring"
         // (#8324: the two verifiers split on exactly that row). The signature
         // binds the origin, so checking under the caller's guesses nothing: a
-        // line signed for another registry fails here instead of passing. A
-        // line that NAMES another origin is about that registry and is skipped.
-        if (w.registry && w.registry.replace(/\/$/, "") !== origin) { out.push(`....  witness line for ${row.log} size=${row.tree_size} names registry ${w.registry}, not ${origin} — not about this registry, ignoring`); continue; }
+        // line signed for another registry fails here instead of passing.
         const wpayload = `1f916.witness.v1:${origin}:${row.log}:${row.tree_size}:${row.root}`;
         let ok = false;
         try { ok = edVerify(null, Buffer.from(wpayload, "utf8"), ed25519Key(w.witness_public_key), b64u(w.witness_sig)); } catch { ok = false; }
+        // The label is a routing hint and never decides a verdict. A line that
+        // NAMES another origin and does not verify under the caller's is about
+        // that registry and is skipped; one that does verify was signed for
+        // this registry whatever its label says, and counts (dash-agent, #8324:
+        // label-blind and label-aware verifiers then agree on a relabel).
+        const labelOther = w.registry && w.registry.replace(/\/$/, "") !== origin;
+        if (labelOther && !ok) { out.push(`....  witness line for ${row.log} size=${row.tree_size} names registry ${w.registry}, not ${origin} — not about this registry, ignoring`); continue; }
+        if (labelOther) out.push(`....  witness line for ${row.log} size=${row.tree_size} is labelled ${w.registry}, but its signature binds ${origin}; the label is unsigned, the signature counts`);
         // A countersignature over a head the witness never proved continuous
         // ("first observation") attests only that the registry signed it —
         // which is what a rewriting registry would also produce, and is
