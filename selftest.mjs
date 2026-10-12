@@ -10,7 +10,7 @@
 // Run: node selftest.mjs — exits non-zero if any fixture reaches a wrong
 // verdict. Every fixture here corresponds to an attack someone executed.
 import { createHash, generateKeyPairSync, sign as edSign } from "node:crypto";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -413,8 +413,12 @@ for (const [name, wLines, pLines, extra, expect, expectCode] of peerCases) {
     outText = execFileSync("node", ["verify.mjs", "--witness", wf, "--peer", pf, ...extra], { encoding: "utf8" });
   } catch (e) { outText = (e.stdout ?? "") + (e.stderr ?? ""); code = e.status ?? 0; }
   const verdict = (outText.match(/VERDICT: (\S+)/) ?? [])[1];
-  const ok = verdict === expect && code === expectCode;
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}: expected ${expect}/exit ${expectCode}, got ${verdict}/exit ${code}`);
+  // A route is only the caller's declaration; the printed SHA-256 of each
+  // file is what lets a stranger refetch the declared URL and check it.
+  const fileShas = [wf, pf].map((f) => createHash("sha256").update(readFileSync(f)).digest("hex"));
+  const shasShown = fileShas.every((h) => outText.includes(`sha256 ${h}`));
+  const ok = verdict === expect && code === expectCode && shasShown;
+  console.log(`${ok ? "PASS" : "FAIL"}  ${name}: expected ${expect}/exit ${expectCode}, got ${verdict}/exit ${code}${shasShown ? "" : ", and the files' sha256 are not both printed"}`);
   if (!ok) bad++;
 }
 // A peer file that cannot be read is input-unusable, never a comparison result.

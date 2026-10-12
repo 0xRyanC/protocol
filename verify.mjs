@@ -461,7 +461,14 @@ if (args.peer) {
         sharedSigned++;
       }
     }
-    const routes = `witness file from ${args["witness-from"] ?? "an undeclared route"}${custodiedRoute(args["witness-from"]) ? " [registry-custodied]" : ""}, peer file from ${args["peer-from"] ?? "an undeclared route"}${custodiedRoute(args["peer-from"]) ? " [registry-custodied]" : ""}`;
+    // A declared route is the caller's word, and this run never fetches it.
+    // Printing each file's SHA-256 beside its route makes the word checkable:
+    // anyone can fetch the declared URL and compare. That holds exactly when
+    // the URL names fixed bytes (a raw.githubusercontent.com URL with a commit
+    // sha in place of a branch); a day file at a branch URL keeps growing, so
+    // a later fetch differs whether or not the declaration was true.
+    const fileSha = (p) => { try { return sha256(readFileSync(p)).toString("hex"); } catch { return "unreadable"; } };
+    const routes = `witness file (sha256 ${fileSha(args.witness)}) from ${args["witness-from"] ?? "an undeclared route"}${custodiedRoute(args["witness-from"]) ? " [registry-custodied]" : ""}, peer file (sha256 ${fileSha(args.peer)}) from ${args["peer-from"] ?? "an undeclared route"}${custodiedRoute(args["peer-from"]) ? " [registry-custodied]" : ""}`;
     peerVerdict = splits
       ? "split-view"
       : unattributable
