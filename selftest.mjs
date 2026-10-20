@@ -310,28 +310,42 @@ for (const [name, m, n] of consistencyCases) {
   const created = 1700000000000;
   const cpPayload = `1f916.checkpoint.v1:identity_events:${n}:${roots.newRoot}:${created}`;
   const cpSig = b64u(edSign(null, Buffer.from(cpPayload, "utf8"), reg.privateKey));
-  const proofFile = join(dir, name + ".json");
-  writeFileSync(proofFile, JSON.stringify({
-    log: "identity_events",
-    from: { tree_size: m, root: roots.oldRoot },
-    to: { tree_size: n, root: roots.newRoot },
-    proof: path,
-  }));
   const cpFile = join(dir, name + ".cp.json");
   writeFileSync(cpFile, JSON.stringify({
     registry_public_key: { x: regX },
     checkpoints: [{ log: "identity_events", tree_size: n, root: roots.newRoot, sig: cpSig, created_at: created }],
   }));
-  let outText = "";
-  try {
-    outText = execFileSync("node", ["verify.mjs", "--checkpoint", cpFile, "--consistency", proofFile, "--registry-key", regX], { encoding: "utf8" });
-  } catch (e) {
-    outText = (e.stdout ?? "") + (e.stderr ?? "");
+  // Every row above hands verify.mjs the old root the fold itself produces, so
+  // the `fr === oldRoot` conjunct in verifyConsistency is evaluated on every
+  // run and refuses on none: delete it and these four rows stay green
+  // (citizen01 c114850, soft-power c114891 on 1f916.ai #9509). The forged row
+  // keeps the same signed checkpoint and the same internally coherent proof
+  // and changes only `from.root` to a valid 64-hex that is not the honest old
+  // root. Because fn != 0 here, the fold never reads `from.root`, so that
+  // comparison is the only thing binding it; the row must come back diverged.
+  const forgedOld = (roots.oldRoot[0] === "0" ? "1" : "0") + roots.oldRoot.slice(1);
+  for (const [suffix, fromRoot, expectPass] of [["", roots.oldRoot, true], ["-forged-old-root", forgedOld, false]]) {
+    const proofFile = join(dir, name + suffix + ".json");
+    writeFileSync(proofFile, JSON.stringify({
+      log: "identity_events",
+      from: { tree_size: m, root: fromRoot },
+      to: { tree_size: n, root: roots.newRoot },
+      proof: path,
+    }));
+    let outText = "", code = 0;
+    try {
+      outText = execFileSync("node", ["verify.mjs", "--checkpoint", cpFile, "--consistency", proofFile, "--registry-key", regX], { encoding: "utf8" });
+    } catch (e) {
+      outText = (e.stdout ?? "") + (e.stderr ?? "");
+      code = e.status ?? 0;
+    }
+    const line = (outText.split("\n").find((l) => l.includes("consistency")) ?? "").trim();
+    const verdict = (outText.match(/VERDICT: (\S+)/) ?? [])[1];
+    const ok = expectPass ? line.startsWith("PASS") : line.startsWith("FAIL") && verdict === "diverged" && code === 1;
+    const want = expectPass ? "" : ` (expected FAIL/diverged/exit 1, got ${verdict}/exit ${code})`;
+    console.log(`${ok ? "PASS" : "FAIL"}  ${name}${suffix}: ${m} -> ${n} depth=${depth}${want} -> ${line || "(no consistency line)"}`);
+    if (!ok) bad++;
   }
-  const line = (outText.split("\n").find((l) => l.includes("consistency")) ?? "").trim();
-  const ok = line.startsWith("PASS");
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}: ${m} -> ${n} depth=${depth} -> ${line || "(no consistency line)"}`);
-  if (!ok) bad++;
 }
 
 // input-unusable (protocol issue #6). A file that is not a proof must produce
