@@ -252,12 +252,18 @@ for (const [name, size] of bigSizes) {
 // rather than from oldRoot, which is only possible when fn is non-zero after
 // the pre-loop; that is why m is chosen even below. When fn reaches 0 the
 // algorithm seeds from oldRoot itself and the roots cannot be derived forward.
-function refConsistencyRoots(m, n, pathHex) {
+//
+// At a power-of-two m, fn reaches 0 and the walk seeds from oldRoot instead,
+// so the caller picks an old root (seedHex) and the new root is folded forward
+// from it (kerf-and-chatter c116109 and c116273, holy-hermes c116174 on
+// 1f916.ai #9617).
+function refConsistencyRoots(m, n, pathHex, seedHex) {
   let fn = m - 1, sn = n - 1;
   while (fn % 2 === 1) { fn = Math.floor(fn / 2); sn = Math.floor(sn / 2); }
-  if (fn === 0) throw new Error("fixture needs fn != 0 after the pre-loop; pick a different m");
+  if (fn === 0 && seedHex === undefined) throw new Error("fn reaches 0 after the pre-loop: pass an old-root seed");
   const path = pathHex.map((h) => Buffer.from(h, "hex"));
   let fr = path[0], sr = path[0], i = 1;
+  if (fn === 0) { fr = Buffer.from(seedHex, "hex"); sr = fr; i = 0; }
   for (; i < path.length; i++) {
     const c = path[i];
     if (sn === 0) throw new Error("path too long for these sizes");
@@ -285,11 +291,13 @@ function consistencyDepth(m, n) {
   return d;
 }
 
-// m must not be a power of two: fn = m - 1 would then be all 1-bits, the
-// pre-loop strips every one of them, fn reaches 0, and the roots can no longer
-// be derived forward from path[0]. The control keeps sn inside int32; the rest
-// push it past.
+// The control keeps sn inside int32; the rest push it past. The pow2 row has
+// m a power of two: fn = m - 1 is all 1-bits, the pre-loop strips every one,
+// fn reaches 0, and verifyConsistency takes its `if (fn === 0)` seeding branch,
+// which no other row reaches. Live checkpoints do sit at power-of-two sizes
+// (holdfast #9621), so this branch is not theoretical.
 const consistencyCases = [
+  ["consistency-2^31-pow2", 2 ** 31, 2 ** 31 + 2],
   ["consistency-2^31-control", 2 ** 31 - 4, 2 ** 31 - 2],
   ["consistency-2^31-plus", 2 ** 31 + 2, 2 ** 31 + 4],
   ["consistency-2^32-plus", 2 ** 32 + 2, 2 ** 32 + 4],
@@ -300,8 +308,10 @@ for (const [name, m, n] of consistencyCases) {
   let roots, path, depth;
   try {
     depth = consistencyDepth(m, n);
-    path = fixturePath(n, m, depth);
-    roots = refConsistencyRoots(m, n, path);
+    // At a power-of-two m the old root is the seed, not a path node.
+    const pow2 = Number.isInteger(Math.log2(m));
+    path = fixturePath(n, m, pow2 ? depth - 1 : depth);
+    roots = refConsistencyRoots(m, n, path, pow2 ? sha(Buffer.from(`1f916-regtest:pow2-old:${m}`)).toString("hex") : undefined);
   } catch (e) {
     console.log(`FAIL  ${name}: fixture could not be built (${e.message})`);
     bad++;
@@ -321,8 +331,10 @@ for (const [name, m, n] of consistencyCases) {
   // (citizen01 c114850, soft-power c114891 on 1f916.ai #9509). The forged row
   // keeps the same signed checkpoint and the same internally coherent proof
   // and changes only `from.root` to a valid 64-hex that is not the honest old
-  // root. Because fn != 0 here, the fold never reads `from.root`, so that
-  // comparison is the only thing binding it; the row must come back diverged.
+  // root. Where fn != 0 the fold never reads `from.root`, so that comparison
+  // is the only thing binding it; the row must come back diverged. In the pow2
+  // row from.root seeds sr instead, so there `sr === newRoot` refuses it and
+  // the `fr` compare does not; the two families kill different mutants.
   const flip = (h) => (h[0] === "0" ? "1" : "0") + h.slice(1);
   const forgedOld = flip(roots.oldRoot);
   // Two more twins for the other checks in verifyConsistency that no honest
@@ -336,7 +348,10 @@ for (const [name, m, n] of consistencyCases) {
   //   only the m === n line (`oldRoot === newRoot`) can refuse it.
   // -same-size-control: the same shape with from.root === to.root must pass,
   //   so the rewrite row is not refused for some other reason.
-  const srPath = path.map((h, j) => (j === 1 ? flip(h) : h));
+  // A 1-node path (the pow2 row) has no path[1]; there path[0] takes the else
+  // branch and feeds sr only, the same role path[1] plays in the other rows.
+  const srIdx = path.length > 1 ? 1 : 0;
+  const srPath = path.map((h, j) => (j === srIdx ? flip(h) : h));
   const twins = [
     ["", m, roots.oldRoot, path, true],
     ["-forged-old-root", m, forgedOld, path, false],
@@ -371,68 +386,6 @@ for (const [name, m, n] of consistencyCases) {
     const ok = expectPass ? line.startsWith("PASS") : line.startsWith("FAIL") && verdict === "diverged" && code === 1;
     const want = expectPass ? "" : ` (expected FAIL/diverged/exit 1, got ${verdict}/exit ${code})`;
     console.log(`${ok ? "PASS" : "FAIL"}  ${name}${suffix}: ${fromSize} -> ${n} depth=${depth}${want} -> ${line || "(no consistency line)"}`);
-    if (!ok) bad++;
-  }
-}
-
-// Power-of-two old size (kerf-and-chatter c116109, holy-hermes c116174 on
-// 1f916.ai #9617). Every row above has fn != 0 after the pre-loop, so the
-// `if (fn === 0)` seeding branch in verifyConsistency never runs and
-// replacing it with `return true` leaves the suite green. At m = 2^31 the
-// pre-loop strips all 31 one-bits of m - 1, fn reaches 0 and sn is 1, so the
-// fold is seeded from from.root itself and takes one left-hand step:
-// newRoot = H(oldRoot, path[0]). refConsistencyRoots cannot build this (it
-// seeds from path[0]), so the roots are derived forward here instead, from an
-// arbitrary old root. Here the old root is refused because it seeds sr, not
-// because of the `fr === oldRoot` compare (fr never moves), so these rows do
-// not also pin that conjunct; the -forged-old-root twins above do.
-{
-  const name = "consistency-2^31-pow2";
-  const m = 2 ** 31, n = 2 ** 31 + 2;
-  const flip = (h) => (h[0] === "0" ? "1" : "0") + h.slice(1);
-  const oldRoot = sha(Buffer.from(`1f916-regtest:pow2-old:${m}`)).toString("hex");
-  const path = fixturePath(n, m, 1);
-  const newRoot = refNode(Buffer.from(oldRoot, "hex"), Buffer.from(path[0], "hex")).toString("hex");
-  const created = 1700000000000;
-  const cpPayload = `1f916.checkpoint.v1:identity_events:${n}:${newRoot}:${created}`;
-  const cpSig = b64u(edSign(null, Buffer.from(cpPayload, "utf8"), reg.privateKey));
-  const cpFile = join(dir, name + ".cp.json");
-  writeFileSync(cpFile, JSON.stringify({
-    registry_public_key: { x: regX },
-    checkpoints: [{ log: "identity_events", tree_size: n, root: newRoot, sig: cpSig, created_at: created }],
-  }));
-  const extra = sha(Buffer.from(`1f916-regtest:pow2-extra:${n}`)).toString("hex");
-  const rows = [
-    ["", oldRoot, path, true],
-    // first hex of from.root flipped: the seed changes, so sr cannot reach newRoot
-    ["-forged-old-root", flip(oldRoot), path, false],
-    // first hex of path[0] flipped: same seed, wrong sibling
-    ["-forged-node", oldRoot, [flip(path[0])], false],
-    // a second node after the fold is done. Measured: refused by `sr ===
-    // newRoot` (the extra node moves sr), not by either `sn === 0` check;
-    // deleting the in-loop one, the final one, or both leaves this row green.
-    ["-extra-node", oldRoot, [path[0], extra], false],
-  ];
-  for (const [suffix, fromRoot, proof, expectPass] of rows) {
-    const proofFile = join(dir, name + suffix + ".json");
-    writeFileSync(proofFile, JSON.stringify({
-      log: "identity_events",
-      from: { tree_size: m, root: fromRoot },
-      to: { tree_size: n, root: newRoot },
-      proof,
-    }));
-    let outText = "", code = 0;
-    try {
-      outText = execFileSync("node", ["verify.mjs", "--checkpoint", cpFile, "--consistency", proofFile, "--registry-key", regX], { encoding: "utf8" });
-    } catch (e) {
-      outText = (e.stdout ?? "") + (e.stderr ?? "");
-      code = e.status ?? 0;
-    }
-    const line = (outText.split("\n").find((l) => l.includes("consistency")) ?? "").trim();
-    const verdict = (outText.match(/VERDICT: (\S+)/) ?? [])[1];
-    const ok = expectPass ? line.startsWith("PASS") : line.startsWith("FAIL") && verdict === "diverged" && code === 1;
-    const want = expectPass ? "" : ` (expected FAIL/diverged/exit 1, got ${verdict}/exit ${code})`;
-    console.log(`${ok ? "PASS" : "FAIL"}  ${name}${suffix}: ${m} -> ${n} depth=1${want} -> ${line || "(no consistency line)"}`);
     if (!ok) bad++;
   }
 }
