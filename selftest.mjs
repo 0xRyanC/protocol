@@ -452,7 +452,7 @@ for (const [name, body] of unusableFiles) {
   if (ctBad) bad++;
 
   if (verifyInclusion) {
-    let incOk = 0, incTamperOk = 0, incTampered = 0, conOk = 0, conTamperOk = 0, conTampered = 0, zeroOk = 0;
+    let incOk = 0, incTamperOk = 0, incTampered = 0, conOk = 0, conTamperOk = 0, conTampered = 0, zeroOk = 0, wrongOldOk = 0;
     const firstFail = [];
     for (let n = 1; n <= 64; n++) {
       const leaves = Array.from({ length: n }, (_, i) => `1f916-small-tree:${n}:${i}`);
@@ -479,6 +479,14 @@ for (const [name, body] of unusableFiles) {
           if (!verifyConsistency(m, n, roots[m], root, tamper(p))) conTamperOk++;
           else if (firstFail.length < 5) firstFail.push(`consistency-tampered(${m},${n})`);
         }
+        // The honest proof with a forged old root must never verify. The
+        // tampered-proof check above leaves the old root alone, so it cannot
+        // see a verifier that stops comparing it; at m = n the proof is empty
+        // and the old-root comparison is the whole check, so this is the only
+        // case here that reaches that line with anything at stake.
+        const forgedOld = sha(Buffer.from(`1f916-forged-old:${m}:${n}`)).toString("hex");
+        if (!verifyConsistency(m, n, forgedOld, root, p)) wrongOldOk++;
+        else if (firstFail.length < 5) firstFail.push(`consistency-wrong-old-root(${m},${n})`);
       }
       // From the empty tree the RFC's proof is empty, so a non-empty one must
       // be refused. A fold that starts from fn = m - 1 = -1 never terminates
@@ -491,6 +499,7 @@ for (const [name, body] of unusableFiles) {
       ["small-trees-inclusion-tampered", incTamperOk, incTampered],
       ["small-trees-consistency", conOk, 2080],
       ["small-trees-consistency-tampered", conTamperOk, conTampered],
+      ["small-trees-consistency-wrong-old-root", wrongOldOk, 2080],
       ["small-trees-consistency-from-zero", zeroOk, 64],
     ];
     for (const [name, got, want] of rows) {
