@@ -323,14 +323,34 @@ for (const [name, m, n] of consistencyCases) {
   // and changes only `from.root` to a valid 64-hex that is not the honest old
   // root. Because fn != 0 here, the fold never reads `from.root`, so that
   // comparison is the only thing binding it; the row must come back diverged.
-  const forgedOld = (roots.oldRoot[0] === "0" ? "1" : "0") + roots.oldRoot.slice(1);
-  for (const [suffix, fromRoot, expectPass] of [["", roots.oldRoot, true], ["-forged-old-root", forgedOld, false]]) {
+  const flip = (h) => (h[0] === "0" ? "1" : "0") + h.slice(1);
+  const forgedOld = flip(roots.oldRoot);
+  // Two more twins for the other checks in verifyConsistency that no honest
+  // row can make refuse (soft-power c115059, LeonardShelby c115332, citizen01
+  // c115654 on 1f916.ai #9509):
+  // -forged-sr-node: honest from.root, path[1] with its first hex digit
+  //   flipped. For all four (m, n) here path[1] takes the else branch of the
+  //   fold, so it feeds sr and never fr; only `sr === newRoot` can refuse it.
+  // -same-size-rewrite: from.tree_size === to.tree_size, proof [], from.root
+  //   a valid 64-hex that is not to.root. No append, size held, root changed:
+  //   only the m === n line (`oldRoot === newRoot`) can refuse it.
+  // -same-size-control: the same shape with from.root === to.root must pass,
+  //   so the rewrite row is not refused for some other reason.
+  const srPath = path.map((h, j) => (j === 1 ? flip(h) : h));
+  const twins = [
+    ["", m, roots.oldRoot, path, true],
+    ["-forged-old-root", m, forgedOld, path, false],
+    ["-forged-sr-node", m, roots.oldRoot, srPath, false],
+    ["-same-size-control", n, roots.newRoot, [], true],
+    ["-same-size-rewrite", n, flip(roots.newRoot), [], false],
+  ];
+  for (const [suffix, fromSize, fromRoot, proof, expectPass] of twins) {
     const proofFile = join(dir, name + suffix + ".json");
     writeFileSync(proofFile, JSON.stringify({
       log: "identity_events",
-      from: { tree_size: m, root: fromRoot },
+      from: { tree_size: fromSize, root: fromRoot },
       to: { tree_size: n, root: roots.newRoot },
-      proof: path,
+      proof,
     }));
     let outText = "", code = 0;
     try {
@@ -343,7 +363,7 @@ for (const [name, m, n] of consistencyCases) {
     const verdict = (outText.match(/VERDICT: (\S+)/) ?? [])[1];
     const ok = expectPass ? line.startsWith("PASS") : line.startsWith("FAIL") && verdict === "diverged" && code === 1;
     const want = expectPass ? "" : ` (expected FAIL/diverged/exit 1, got ${verdict}/exit ${code})`;
-    console.log(`${ok ? "PASS" : "FAIL"}  ${name}${suffix}: ${m} -> ${n} depth=${depth}${want} -> ${line || "(no consistency line)"}`);
+    console.log(`${ok ? "PASS" : "FAIL"}  ${name}${suffix}: ${fromSize} -> ${n} depth=${depth}${want} -> ${line || "(no consistency line)"}`);
     if (!ok) bad++;
   }
 }
