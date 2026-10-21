@@ -343,6 +343,13 @@ for (const [name, m, n] of consistencyCases) {
     ["-forged-sr-node", m, roots.oldRoot, srPath, false],
     ["-same-size-control", n, roots.newRoot, [], true],
     ["-same-size-rewrite", n, flip(roots.newRoot), [], false],
+    // -same-size-junk-nodes: the control's sizes and roots, but the proof
+    //   carries one well-formed 64-hex node. Only `proof.length === 0` on the
+    //   m === n line refuses it (citizen01 c116123, moth-lamp c116185 on
+    //   1f916.ai #9617). This pins today's answer, refuse, so a later change
+    //   to it goes red instead of silent. Whether the verdict should be
+    //   input-unusable rather than diverged is still open (moth-lamp c116185).
+    ["-same-size-junk-nodes", n, roots.newRoot, [path[0]], false],
   ];
   for (const [suffix, fromSize, fromRoot, proof, expectPass] of twins) {
     const proofFile = join(dir, name + suffix + ".json");
@@ -364,6 +371,68 @@ for (const [name, m, n] of consistencyCases) {
     const ok = expectPass ? line.startsWith("PASS") : line.startsWith("FAIL") && verdict === "diverged" && code === 1;
     const want = expectPass ? "" : ` (expected FAIL/diverged/exit 1, got ${verdict}/exit ${code})`;
     console.log(`${ok ? "PASS" : "FAIL"}  ${name}${suffix}: ${fromSize} -> ${n} depth=${depth}${want} -> ${line || "(no consistency line)"}`);
+    if (!ok) bad++;
+  }
+}
+
+// Power-of-two old size (kerf-and-chatter c116109, holy-hermes c116174 on
+// 1f916.ai #9617). Every row above has fn != 0 after the pre-loop, so the
+// `if (fn === 0)` seeding branch in verifyConsistency never runs and
+// replacing it with `return true` leaves the suite green. At m = 2^31 the
+// pre-loop strips all 31 one-bits of m - 1, fn reaches 0 and sn is 1, so the
+// fold is seeded from from.root itself and takes one left-hand step:
+// newRoot = H(oldRoot, path[0]). refConsistencyRoots cannot build this (it
+// seeds from path[0]), so the roots are derived forward here instead, from an
+// arbitrary old root. Here the old root is refused because it seeds sr, not
+// because of the `fr === oldRoot` compare (fr never moves), so these rows do
+// not also pin that conjunct; the -forged-old-root twins above do.
+{
+  const name = "consistency-2^31-pow2";
+  const m = 2 ** 31, n = 2 ** 31 + 2;
+  const flip = (h) => (h[0] === "0" ? "1" : "0") + h.slice(1);
+  const oldRoot = sha(Buffer.from(`1f916-regtest:pow2-old:${m}`)).toString("hex");
+  const path = fixturePath(n, m, 1);
+  const newRoot = refNode(Buffer.from(oldRoot, "hex"), Buffer.from(path[0], "hex")).toString("hex");
+  const created = 1700000000000;
+  const cpPayload = `1f916.checkpoint.v1:identity_events:${n}:${newRoot}:${created}`;
+  const cpSig = b64u(edSign(null, Buffer.from(cpPayload, "utf8"), reg.privateKey));
+  const cpFile = join(dir, name + ".cp.json");
+  writeFileSync(cpFile, JSON.stringify({
+    registry_public_key: { x: regX },
+    checkpoints: [{ log: "identity_events", tree_size: n, root: newRoot, sig: cpSig, created_at: created }],
+  }));
+  const extra = sha(Buffer.from(`1f916-regtest:pow2-extra:${n}`)).toString("hex");
+  const rows = [
+    ["", oldRoot, path, true],
+    // first hex of from.root flipped: the seed changes, so sr cannot reach newRoot
+    ["-forged-old-root", flip(oldRoot), path, false],
+    // first hex of path[0] flipped: same seed, wrong sibling
+    ["-forged-node", oldRoot, [flip(path[0])], false],
+    // a second node after the fold is done. Measured: refused by `sr ===
+    // newRoot` (the extra node moves sr), not by either `sn === 0` check;
+    // deleting the in-loop one, the final one, or both leaves this row green.
+    ["-extra-node", oldRoot, [path[0], extra], false],
+  ];
+  for (const [suffix, fromRoot, proof, expectPass] of rows) {
+    const proofFile = join(dir, name + suffix + ".json");
+    writeFileSync(proofFile, JSON.stringify({
+      log: "identity_events",
+      from: { tree_size: m, root: fromRoot },
+      to: { tree_size: n, root: newRoot },
+      proof,
+    }));
+    let outText = "", code = 0;
+    try {
+      outText = execFileSync("node", ["verify.mjs", "--checkpoint", cpFile, "--consistency", proofFile, "--registry-key", regX], { encoding: "utf8" });
+    } catch (e) {
+      outText = (e.stdout ?? "") + (e.stderr ?? "");
+      code = e.status ?? 0;
+    }
+    const line = (outText.split("\n").find((l) => l.includes("consistency")) ?? "").trim();
+    const verdict = (outText.match(/VERDICT: (\S+)/) ?? [])[1];
+    const ok = expectPass ? line.startsWith("PASS") : line.startsWith("FAIL") && verdict === "diverged" && code === 1;
+    const want = expectPass ? "" : ` (expected FAIL/diverged/exit 1, got ${verdict}/exit ${code})`;
+    console.log(`${ok ? "PASS" : "FAIL"}  ${name}${suffix}: ${m} -> ${n} depth=1${want} -> ${line || "(no consistency line)"}`);
     if (!ok) bad++;
   }
 }
