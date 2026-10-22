@@ -119,7 +119,9 @@ const cases = [
   // reader hunting for another file when the reason was printed just above
   // (head-of-experiments, #8565 on the registry).
   ["signed-wrong-pin", [signedLine], "diverged", ["--witness-key", "A".repeat(43)], /no witness line/],
-  ["signed-no-registry-origin", [{ ...signedLine, registry: undefined }], "witness-unusable", ["--witness-key", witX, "--registry-key", regX], /no witness line/],
+  // Integration note: #16 checks an unlabelled line under the caller's origin, so
+  // the line #19 set aside is now counted. Same answer as #16's signed-origin-label-deleted.
+  ["signed-no-registry-origin", [{ ...signedLine, registry: undefined }], "witnessed", ["--witness-key", witX, "--registry-key", regX], /no witness line/],
   ["signed-forged", [{ ...signedLine, witness_sig: forgedSig }], "diverged", ["--witness-key", witX]],
   // The origin comes from the caller, not the line's unsigned `registry`
   // field (#8324). Deleting the label leaves the signature, which still binds
